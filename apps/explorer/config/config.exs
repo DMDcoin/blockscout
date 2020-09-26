@@ -88,6 +88,19 @@ config :explorer, Explorer.Counters.AddressesCounter,
   enable_consolidation: true,
   update_interval_in_seconds: balances_update_interval || 30 * 60
 
+bridge_market_cap_update_interval =
+  if System.get_env("BRIDGE_MARKET_CAP_UPDATE_INTERVAL") do
+    case Integer.parse(System.get_env("BRIDGE_MARKET_CAP_UPDATE_INTERVAL")) do
+      {integer, ""} -> integer
+      _ -> nil
+    end
+  end
+
+config :explorer, Explorer.Counters.Bridge,
+  enabled: if(System.get_env("SUPPLY_MODULE") === "TokenBridge", do: true, else: false),
+  enable_consolidation: System.get_env("DISABLE_BRIDGE_MARKET_CAP_UPDATER") !== "true",
+  update_interval_in_seconds: bridge_market_cap_update_interval || 30 * 60
+
 config :explorer, Explorer.ExchangeRates, enabled: System.get_env("DISABLE_EXCHANGE_RATES") != "true", store: :ets
 
 config :explorer, Explorer.KnownTokens, enabled: true, store: :ets
@@ -207,6 +220,11 @@ config :explorer, Explorer.Chain.Cache.Accounts,
   global_ttl: if(System.get_env("DISABLE_INDEXER") == "true", do: :timer.seconds(5))
 
 config :explorer, Explorer.Chain.Cache.PendingTransactions,
+  enabled:
+    if(System.get_env("ETHEREUM_JSONRPC_VARIANT") == "besu",
+      do: false,
+      else: true
+    ),
   ttl_check_interval: if(System.get_env("DISABLE_INDEXER") == "true", do: :timer.seconds(1), else: false),
   global_ttl: if(System.get_env("DISABLE_INDEXER") == "true", do: :timer.seconds(5))
 
