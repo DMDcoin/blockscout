@@ -35,10 +35,16 @@ RUN cd apps/explorer/ && \
     npm install && \
     apk update && apk del --force-broken-world alpine-sdk gmp-dev automake libtool inotify-tools autoconf python
 
+RUN mix deps.get
+
 # RUN mix do ecto.drop --force, ecto.create, ecto.migrate
 
 RUN mix phx.digest
 
-# USER default
+ADD  docker/blockscoutDockerContent/* .
 
-# CMD ["mix", "phx.server"]
+# USER default
+# "mix", "do", "ecto.create", "ecto.migrate", "phx.server"
+
+#CMD ["mix", "do", "ecto.create", "ecto.migrate", "phx.server"]
+CMD ["./start-blockscout.sh"]
