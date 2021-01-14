@@ -7,12 +7,12 @@ defmodule BlockScoutWeb.SmartContractView do
 
   def queryable?(inputs) when is_nil(inputs), do: false
 
-  def writeable?(function) when not is_nil(function),
+  def writable?(function) when not is_nil(function),
     do:
       !constructor?(function) && !event?(function) &&
         (payable?(function) || nonpayable?(function))
 
-  def writeable?(function) when is_nil(function), do: false
+  def writable?(function) when is_nil(function), do: false
 
   def outputs?(outputs) when not is_nil(outputs), do: Enum.any?(outputs)
 
@@ -34,6 +34,7 @@ defmodule BlockScoutWeb.SmartContractView do
   end
 
   def address?(type), do: type in ["address", "address payable"]
+  def int?(type), do: String.contains?(type, "int") && !String.contains?(type, "[")
 
   def named_argument?(%{"name" => ""}), do: false
   def named_argument?(%{"name" => nil}), do: false
@@ -46,6 +47,17 @@ defmodule BlockScoutWeb.SmartContractView do
     |> Enum.join(", ")
   end
 
+  def values(values, type) when is_list(values) and type == "tuple[]" do
+    array_from_tuple = tuple_array_to_array(values)
+
+    array_from_tuple
+    |> Enum.join(", ")
+  end
+
+  def values(value, _type) when is_tuple(value) do
+    tuple_to_array(value)
+  end
+
   def values(value, type) when type in ["address", "address payable"] do
     {:ok, address} = Explorer.Chain.Hash.Address.cast(value)
     to_string(address)
@@ -53,4 +65,22 @@ defmodule BlockScoutWeb.SmartContractView do
 
   def values(values, _) when is_list(values), do: Enum.join(values, ",")
   def values(value, _), do: value
+
+  defp tuple_array_to_array(values) do
+    values
+    |> Enum.map(fn value ->
+      tuple_to_array(value)
+    end)
+  end
+
+  defp tuple_to_array(value) do
+    value
+    |> Tuple.to_list()
+    |> Enum.map(&binary_to_utf_string(&1))
+    |> Enum.join(",")
+  end
+
+  defp binary_to_utf_string(item) do
+    if is_binary(item), do: "0x" <> Base.encode16(item, case: :lower), else: item
+  end
 end

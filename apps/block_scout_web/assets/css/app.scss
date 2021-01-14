@@ -117,8 +117,12 @@ $fa-font-path: "~@fortawesome/fontawesome-free/webfonts";
 @import "components/_erc721_token_image_container";
 @import "components/_inventory_token_instance_image_container";
 @import "components/_external_link";
+@import "components/_label";
 
 @import "theme/dark-theme";
+
+@import "theme/custom_contracts/dark-forest-theme";
+@import "theme/custom_contracts/circles-theme";
 
 :export {
   dashboardBannerChartAxisFontColor: $dashboard-banner-chart-axis-font-color;

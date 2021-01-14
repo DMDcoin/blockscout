@@ -11,6 +11,7 @@ defmodule Explorer.Chain.Supply.TokenBridge do
     ]
 
   alias Explorer.Chain.{BridgedToken, Token, Wei}
+  alias Explorer.Chain.Cache.TokenExchangeRate, as: TokenExchangeRateCache
   alias Explorer.Counters.Bridge
   alias Explorer.ExchangeRates.Source
   alias Explorer.Repo
@@ -66,7 +67,15 @@ defmodule Explorer.Chain.Supply.TokenBridge do
     end
   end
 
-  def market_cap(_), do: Decimal.new(0)
+  def market_cap(_) do
+    total_market_cap_from_omni = total_market_cap_from_omni_bridge()
+
+    if total_market_cap_from_omni do
+      total_market_cap_from_omni
+    else
+      Decimal.new(0)
+    end
+  end
 
   def token_bridge_market_cap(%{usd_value: usd_value}) when not is_nil(usd_value) do
     total_coins_from_token_b = total_coins_from_token_bridge()
@@ -157,7 +166,7 @@ defmodule Explorer.Chain.Supply.TokenBridge do
 
     case type do
       "address" ->
-        "0x" <> Base.encode16(value)
+        value
 
       "uint256" ->
         %Wei{value: Decimal.new(value)}
@@ -188,13 +197,9 @@ defmodule Explorer.Chain.Supply.TokenBridge do
   def get_current_price_for_bridged_token(symbol) when is_nil(symbol), do: nil
 
   def get_current_price_for_bridged_token(symbol) do
-    case Source.fetch_exchange_rates_for_token(symbol) do
-      {:ok, [rates]} ->
-        rates.usd_value
+    bridged_token_symbol_for_price_fetching = bridged_token_symbol_mapping_to_get_price(symbol)
 
-      _ ->
-        nil
-    end
+    TokenExchangeRateCache.fetch(bridged_token_symbol_for_price_fetching)
   end
 
   def get_bridged_mainnet_tokens_list do
@@ -214,14 +219,14 @@ defmodule Explorer.Chain.Supply.TokenBridge do
     bridged_mainnet_tokens_with_supply =
       bridged_mainnet_tokens_list
       |> Enum.map(fn {bridged_token_hash, bridged_token_symbol} ->
-        bridged_token_symbol_corrected =
-          case bridged_token_symbol do
-            "POA20" -> "POA"
-            "yDAI+yUSDC+yUSDT+yTUSD" -> "yCurve"
-            symbol -> symbol
-          end
+        bridged_token_price_from_cache = TokenExchangeRateCache.fetch(bridged_token_symbol)
 
-        bridged_token_price = Bridge.fetch_token_price(bridged_token_symbol_corrected)
+        bridged_token_price =
+          if bridged_token_price_from_cache && Decimal.cmp(bridged_token_price_from_cache, 0) == :gt do
+            bridged_token_price_from_cache
+          else
+            TokenExchangeRateCache.fetch_token_exchange_rate(bridged_token_symbol)
+          end
 
         query =
           from(t in Token,
@@ -265,5 +270,13 @@ defmodule Explorer.Chain.Supply.TokenBridge do
       end)
 
     omni_bridge_market_cap
+  end
+
+  defp bridged_token_symbol_mapping_to_get_price(symbol) do
+    case symbol do
+      "POA20" -> "POA"
+      "yDAI+yUSDC+yUSDT+yTUSD" -> "yCurve"
+      symbol -> symbol
+    end
   end
 end
