@@ -3,6 +3,7 @@ defmodule BlockScoutWeb.Tokens.Instance.OverviewView do
 
   alias BlockScoutWeb.CurrencyHelpers
   alias Explorer.Chain.{Address, SmartContract, Token}
+  alias Explorer.SmartContract.Helper
 
   import BlockScoutWeb.APIDocsView, only: [blockscout_url: 1, blockscout_url: 2]
 
@@ -17,13 +18,13 @@ defmodule BlockScoutWeb.Tokens.Instance.OverviewView do
   def total_supply?(%Token{total_supply: nil}), do: false
   def total_supply?(%Token{total_supply: _}), do: true
 
-  def image_src(nil), do: "/images/controller.svg"
+  def media_src(nil), do: "/images/controller.svg"
 
-  def image_src(instance) do
+  def media_src(instance) do
     result =
       cond do
         instance.metadata && instance.metadata["image_url"] ->
-          instance.metadata["image_url"]
+          retrieve_image(instance.metadata["image_url"])
 
         instance.metadata && instance.metadata["image"] ->
           retrieve_image(instance.metadata["image"])
@@ -32,11 +33,19 @@ defmodule BlockScoutWeb.Tokens.Instance.OverviewView do
           instance.metadata["properties"]["image"]["description"]
 
         true ->
-          image_src(nil)
+          media_src(nil)
       end
 
-    if String.trim(result) == "", do: image_src(nil), else: result
+    if String.trim(result) == "", do: media_src(nil), else: result
   end
+
+  def media_type(media_src) when not is_nil(media_src) do
+    media_src
+    |> String.split(".")
+    |> Enum.at(-1)
+  end
+
+  def media_type(nil), do: nil
 
   def external_url(nil), do: nil
 
@@ -60,7 +69,7 @@ defmodule BlockScoutWeb.Tokens.Instance.OverviewView do
   def smart_contract_with_read_only_functions?(
         %Token{contract_address: %Address{smart_contract: %SmartContract{}}} = token
       ) do
-    Enum.any?(token.contract_address.smart_contract.abi, &(&1["constant"] || &1["stateMutability"] == "view"))
+    Enum.any?(token.contract_address.smart_contract.abi, &Helper.queriable_method?(&1))
   end
 
   def smart_contract_with_read_only_functions?(%Token{contract_address: %Address{smart_contract: nil}}), do: false
@@ -104,8 +113,13 @@ defmodule BlockScoutWeb.Tokens.Instance.OverviewView do
     image["description"]
   end
 
-  defp retrieve_image(image) do
-    image
+  defp retrieve_image(image_url) do
+    if image_url =~ "ipfs://ipfs" do
+      "ipfs://ipfs" <> ipfs_uid = image_url
+      "https://ipfs.io/ipfs/" <> ipfs_uid
+    else
+      image_url
+    end
   end
 
   defp tab_name(["token-transfers"]), do: gettext("Token Transfers")

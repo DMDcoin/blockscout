@@ -9,6 +9,7 @@ defmodule Explorer.SmartContract.Reader do
   alias EthereumJSONRPC.Contract
   alias Explorer.Chain
   alias Explorer.Chain.{Hash, SmartContract}
+  alias Explorer.SmartContract.Helper
 
   @typedoc """
   Map of functions to call with the values for the function to be called with.
@@ -94,22 +95,7 @@ defmodule Explorer.SmartContract.Reader do
           functions()
         ) :: functions_results()
   def query_contract(contract_address, abi, functions) do
-    requests =
-      functions
-      |> Enum.map(fn {method_id, args} ->
-        %{
-          contract_address: contract_address,
-          method_id: method_id,
-          args: args
-        }
-      end)
-
-    requests
-    |> query_contracts(abi)
-    |> Enum.zip(requests)
-    |> Enum.into(%{}, fn {response, request} ->
-      {request.method_id, response}
-    end)
+    query_contract_inner(contract_address, abi, functions, nil, nil)
   end
 
   @spec query_contract(
@@ -119,6 +105,20 @@ defmodule Explorer.SmartContract.Reader do
           functions()
         ) :: functions_results()
   def query_contract(contract_address, from, abi, functions) do
+    query_contract_inner(contract_address, abi, functions, nil, from)
+  end
+
+  @spec query_contract_by_block_number(
+          String.t(),
+          term(),
+          functions(),
+          non_neg_integer()
+        ) :: functions_results()
+  def query_contract_by_block_number(contract_address, abi, functions, block_number) do
+    query_contract_inner(contract_address, abi, functions, block_number, nil)
+  end
+
+  defp query_contract_inner(contract_address, abi, functions, block_number, from) do
     requests =
       functions
       |> Enum.map(fn {method_id, args} ->
@@ -126,7 +126,8 @@ defmodule Explorer.SmartContract.Reader do
           contract_address: contract_address,
           from: from,
           method_id: method_id,
-          args: args
+          args: args,
+          block_number: block_number
         }
       end)
 
@@ -203,7 +204,7 @@ defmodule Explorer.SmartContract.Reader do
         abi_with_method_id = get_abi_with_method_id(abi)
 
         abi_with_method_id
-        |> Enum.filter(&(&1["constant"] || &1["stateMutability"] == "view"))
+        |> Enum.filter(&Helper.queriable_method?(&1))
         |> Enum.map(&fetch_current_value_from_blockchain(&1, abi_with_method_id, contract_address_hash))
     end
   end
@@ -219,7 +220,7 @@ defmodule Explorer.SmartContract.Reader do
         implementation_abi_with_method_id = get_abi_with_method_id(implementation_abi)
 
         implementation_abi_with_method_id
-        |> Enum.filter(&(&1["constant"] || &1["stateMutability"] == "view"))
+        |> Enum.filter(&Helper.queriable_method?(&1))
         |> Enum.map(&fetch_current_value_from_blockchain(&1, implementation_abi_with_method_id, contract_address_hash))
     end
   end
@@ -259,24 +260,21 @@ defmodule Explorer.SmartContract.Reader do
     |> Enum.with_index()
     |> Enum.all?(fn {target_type, index} ->
       type_to_compare = Map.get(Enum.at(Map.get(target_method, "inputs"), index), "type")
-      target_type_formatted = format_input_type(target_type)
+      target_type_formatted = format_type(target_type)
       target_type_formatted == type_to_compare
     end)
   end
 
-  defp format_input_type(input_type) do
+  defp format_type(input_type) do
     case input_type do
-      {:array, {type, size}, array_size} ->
-        Atom.to_string(type) <> Integer.to_string(size) <> "[" <> Integer.to_string(array_size) <> "]"
-
       {:array, type, array_size} ->
-        Atom.to_string(type) <> "[" <> Integer.to_string(array_size) <> "]"
-
-      {:array, {type, size}} ->
-        Atom.to_string(type) <> Integer.to_string(size) <> "[]"
+        format_type(type) <> "[" <> Integer.to_string(array_size) <> "]"
 
       {:array, type} ->
-        Atom.to_string(type) <> "[]"
+        format_type(type) <> "[]"
+
+      {:tuple, tuple} ->
+        format_tuple_type(tuple)
 
       {type, size} ->
         Atom.to_string(type) <> Integer.to_string(size)
@@ -284,6 +282,20 @@ defmodule Explorer.SmartContract.Reader do
       type ->
         Atom.to_string(type)
     end
+  end
+
+  defp format_tuple_type(tuple) do
+    tuple_types =
+      tuple
+      |> Enum.reduce(nil, fn tuple_item, acc ->
+        if acc do
+          acc <> "," <> format_type(tuple_item)
+        else
+          format_type(tuple_item)
+        end
+      end)
+
+    "tuple[#{tuple_types}]"
   end
 
   def fetch_current_value_from_blockchain(function, abi, contract_address_hash) do
@@ -367,6 +379,15 @@ defmodule Explorer.SmartContract.Reader do
     returns
     |> Enum.map(fn output ->
       case output do
+        {:array, type, array_size} ->
+          %{"type" => format_type(type) <> "[" <> Integer.to_string(array_size) <> "]"}
+
+        {:array, type} ->
+          %{"type" => format_type(type) <> "[]"}
+
+        {:tuple, tuple} ->
+          %{"type" => format_tuple_type(tuple)}
+
         {type, size} ->
           full_type = Atom.to_string(type) <> Integer.to_string(size)
           %{"type" => full_type}
@@ -382,11 +403,33 @@ defmodule Explorer.SmartContract.Reader do
   but we always get strings from the front, so it is necessary to normalize it.
   """
   def normalize_args(args) do
-    Enum.map(args, &parse_item/1)
+    if is_map(args) do
+      [res] = Enum.map(args, &parse_item/1)
+      res
+    else
+      Enum.map(args, &parse_item/1)
+    end
   end
 
   defp parse_item("true"), do: true
   defp parse_item("false"), do: false
+
+  defp parse_item(item) when is_tuple(item) do
+    item
+    |> Tuple.to_list()
+    |> Enum.map(fn value ->
+      if is_list(value) do
+        value
+        |> Enum.join("")
+      else
+        hex =
+          value
+          |> Base.encode16(case: :lower)
+
+        "0x" <> hex
+      end
+    end)
+  end
 
   defp parse_item(item) do
     response = Integer.parse(item)
@@ -415,24 +458,26 @@ defmodule Explorer.SmartContract.Reader do
   end
 
   defp new_value(%{"type" => "address"} = output, [value], _index) do
-    Map.put_new(output, "value", bytes_to_string(value))
+    Map.put_new(output, "value", value)
   end
 
   defp new_value(%{"type" => :address} = output, [value], _index) do
-    Map.put_new(output, "value", bytes_to_string(value))
+    Map.put_new(output, "value", value)
   end
 
   defp new_value(%{"type" => "address"} = output, values, index) do
-    Map.put_new(output, "value", bytes_to_string(Enum.at(values, index)))
+    Map.put_new(output, "value", Enum.at(values, index))
   end
 
   defp new_value(%{"type" => :address} = output, values, index) do
-    Map.put_new(output, "value", bytes_to_string(Enum.at(values, index)))
+    Map.put_new(output, "value", Enum.at(values, index))
   end
 
   defp new_value(%{"type" => "bytes" <> number_rest} = output, values, index) do
     if String.contains?(number_rest, "[]") do
       values_array = Enum.at(values, index)
+
+      values_array = if is_list(values_array), do: values_array, else: []
 
       values_array_formatted =
         Enum.map(values_array, fn value ->
@@ -446,6 +491,10 @@ defmodule Explorer.SmartContract.Reader do
   end
 
   defp new_value(%{"type" => "bytes"} = output, values, index) do
+    Map.put_new(output, "value", bytes_to_string(Enum.at(values, index)))
+  end
+
+  defp new_value(%{"type" => :bytes} = output, values, index) do
     Map.put_new(output, "value", bytes_to_string(Enum.at(values, index)))
   end
 

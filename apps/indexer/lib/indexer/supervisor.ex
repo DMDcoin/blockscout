@@ -5,7 +5,17 @@ defmodule Indexer.Supervisor do
 
   use Supervisor
 
-  alias Indexer.{Block, PendingOpsCleaner, SetBridgedMetadataForTokens}
+  alias Explorer.Chain
+
+  alias Indexer.{
+    Block,
+    CalcLpTokensTotalLiqudity,
+    PendingOpsCleaner,
+    PendingTransactionsSanitizer,
+    SetAmbBridgedMetadataForTokens,
+    SetOmniBridgedMetadataForTokens
+  }
+
   alias Indexer.Block.{Catchup, Realtime}
 
   alias Indexer.Fetcher.{
@@ -16,7 +26,6 @@ defmodule Indexer.Supervisor do
     InternalTransaction,
     PendingTransaction,
     ReplacedTransaction,
-    StakingPools,
     Token,
     TokenBalance,
     TokenInstance,
@@ -114,11 +123,11 @@ defmodule Indexer.Supervisor do
       {TokenBalance.Supervisor, [[json_rpc_named_arguments: json_rpc_named_arguments, memory_monitor: memory_monitor]]},
       {TokenUpdater.Supervisor, [[json_rpc_named_arguments: json_rpc_named_arguments, memory_monitor: memory_monitor]]},
       {ReplacedTransaction.Supervisor, [[memory_monitor: memory_monitor]]},
-      {StakingPools.Supervisor, [[memory_monitor: memory_monitor]]},
 
       # Out-of-band fetchers
       {CoinBalanceOnDemand.Supervisor, [json_rpc_named_arguments]},
       {TokenTotalSupplyOnDemand.Supervisor, [json_rpc_named_arguments]},
+      {PendingTransactionsSanitizer, [[json_rpc_named_arguments: json_rpc_named_arguments]]},
 
       # Temporary workers
       {UncatalogedTokenTransfers.Supervisor, [[]]},
@@ -129,13 +138,21 @@ defmodule Indexer.Supervisor do
       {PendingOpsCleaner, [[], []]}
     ]
 
-    multi_token_bridge_mediator = Application.get_env(:block_scout_web, :multi_token_bridge_mediator)
-
-    all_fetchers =
-      if multi_token_bridge_mediator && multi_token_bridge_mediator !== "" do
-        [{SetBridgedMetadataForTokens, [[], []]} | basic_fetchers]
+    extended_fetchers =
+      if Chain.bridged_tokens_enabled?() do
+        fetchers_with_omni_status = [{SetOmniBridgedMetadataForTokens, [[], []]} | basic_fetchers]
+        [{CalcLpTokensTotalLiqudity, [[], []]} | fetchers_with_omni_status]
       else
         basic_fetchers
+      end
+
+    amb_bridge_mediators = Application.get_env(:block_scout_web, :amb_bridge_mediators)
+
+    all_fetchers =
+      if amb_bridge_mediators && amb_bridge_mediators !== "" do
+        [{SetAmbBridgedMetadataForTokens, [[], []]} | extended_fetchers]
+      else
+        extended_fetchers
       end
 
     Supervisor.init(

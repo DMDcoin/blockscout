@@ -987,7 +987,7 @@ defmodule Explorer.ChainTest do
       block_height = Chain.block_height()
 
       assert block.number == block_height
-      assert {:ok, 0} = Chain.confirmations(block, block_height: block_height)
+      assert {:ok, 1} = Chain.confirmations(block, block_height: block_height)
     end
 
     test "with block.number < block_height" do
@@ -996,7 +996,7 @@ defmodule Explorer.ChainTest do
 
       assert block.number < block_height
       assert {:ok, confirmations} = Chain.confirmations(block, block_height: block_height)
-      assert confirmations == block_height - block.number
+      assert confirmations == block_height - block.number + 1
     end
   end
 
@@ -1372,6 +1372,7 @@ defmodule Explorer.ChainTest do
     test "returns 1.0 if fully indexed blocks" do
       for index <- 0..9 do
         insert(:block, number: index)
+        Process.sleep(200)
       end
 
       assert Decimal.cmp(Chain.indexed_ratio(), 1) == :eq
@@ -1382,6 +1383,7 @@ defmodule Explorer.ChainTest do
     test "fetches min block numbers" do
       for index <- 5..9 do
         insert(:block, number: index)
+        Process.sleep(200)
       end
 
       assert 5 = Chain.fetch_min_block_number()
@@ -3227,7 +3229,12 @@ defmodule Explorer.ChainTest do
     test "finds a contract address" do
       address =
         insert(:address, contract_code: Factory.data("contract_code"), smart_contract: nil, names: [])
-        |> Repo.preload([:contracts_creation_internal_transaction, :contracts_creation_transaction, :token])
+        |> Repo.preload([
+          :contracts_creation_internal_transaction,
+          :contracts_creation_transaction,
+          :token,
+          :smart_contract_additional_sources
+        ])
 
       options = [
         necessity_by_association: %{
@@ -3372,14 +3379,20 @@ defmodule Explorer.ChainTest do
 
     # 0101
     test "0..0 with blocks 1,3" do
-      Enum.each([1, 3], &insert(:block, number: &1))
+      Enum.each([1, 3], fn num ->
+        insert(:block, number: num)
+        Process.sleep(200)
+      end)
 
       assert Chain.missing_block_number_ranges(0..0) == [0..0]
     end
 
     # 0111
     test "0..0 with blocks 1..3" do
-      Enum.each(1..3, &insert(:block, number: &1))
+      Enum.each(1..3, fn num ->
+        insert(:block, number: num)
+        Process.sleep(200)
+      end)
 
       assert Chain.missing_block_number_ranges(0..0) == [0..0]
     end
@@ -3421,7 +3434,10 @@ defmodule Explorer.ChainTest do
 
     # 1101
     test "0..0 with blocks 0,1,3" do
-      Enum.each([0, 1, 3], &insert(:block, number: &1))
+      Enum.each([0, 1, 3], fn num ->
+        insert(:block, number: num)
+        Process.sleep(200)
+      end)
 
       assert Chain.missing_block_number_ranges(0..0) == []
     end
@@ -3435,7 +3451,10 @@ defmodule Explorer.ChainTest do
 
     # 1111
     test "0..0 with blocks 0..3" do
-      Enum.each(0..2, &insert(:block, number: &1))
+      Enum.each(0..2, fn num ->
+        insert(:block, number: num)
+        Process.sleep(200)
+      end)
 
       assert Chain.missing_block_number_ranges(0..0) == []
     end
@@ -4658,7 +4677,7 @@ defmodule Explorer.ChainTest do
           transaction: transaction,
           token_contract_address: token_contract_address,
           token: token,
-          token_id: 11
+          token_id: 29
         )
 
       second_page =
@@ -4669,7 +4688,7 @@ defmodule Explorer.ChainTest do
           transaction: transaction,
           token_contract_address: token_contract_address,
           token: token,
-          token_id: 29
+          token_id: 11
         )
 
       paging_options = %PagingOptions{key: {first_page.token_id}, page_size: 1}
@@ -4858,6 +4877,23 @@ defmodule Explorer.ChainTest do
 
       assert found_creation_data == ""
     end
+
+    test "fetches contract creation input data from contract byte code (if contract is pre-compiled)" do
+      input = %Data{
+        bytes: <<1, 2, 3, 4, 5>>
+      }
+
+      address =
+        insert(:address,
+          contract_code: %Data{
+            bytes: <<1, 2, 3, 4, 5>>
+          }
+        )
+
+      found_creation_data = Chain.contract_creation_input_data(address.hash)
+
+      assert found_creation_data == Data.to_string(input) |> String.replace("0x", "")
+    end
   end
 
   describe "transaction_token_transfer_type/1" do
@@ -4980,7 +5016,7 @@ defmodule Explorer.ChainTest do
 
       options = %PagingOptions{page_size: 20, page_number: 1}
 
-      assert [gotten_validator] = Chain.staking_pools(:validator, options)
+      assert [%{pool: gotten_validator}] = Chain.staking_pools(:validator, options)
       assert inserted_validator.staking_address_hash == gotten_validator.staking_address_hash
     end
 
@@ -4990,8 +5026,66 @@ defmodule Explorer.ChainTest do
 
       options = %PagingOptions{page_size: 20, page_number: 1}
 
-      assert [gotten_pool] = Chain.staking_pools(:active, options)
+      assert [%{pool: gotten_pool}] = Chain.staking_pools(:active, options)
       assert inserted_pool.staking_address_hash == gotten_pool.staking_address_hash
+    end
+
+    test "all active staking pools ordered by staking_address" do
+      address1 = Factory.address_hash()
+      address2 = Factory.address_hash()
+      address3 = Factory.address_hash()
+
+      assert address1 < address2 and address2 < address3
+
+      # insert pools in descending order
+      insert(:staking_pool, is_active: true, staking_address_hash: address3)
+      insert(:staking_pool, is_active: true, staking_address_hash: address2)
+      insert(:staking_pool, is_active: true, staking_address_hash: address1)
+
+      # get all active pools in ascending order
+      assert [%{pool: pool1}, %{pool: pool2}, %{pool: pool3}] = Chain.staking_pools(:active, :all)
+      assert pool1.staking_address_hash == address1
+      assert pool2.staking_address_hash == address2
+      assert pool3.staking_address_hash == address3
+    end
+
+    test "staking pools ordered by stakes_ratio, is_active, and staking_address_hash" do
+      address1 = Factory.address_hash()
+      address2 = Factory.address_hash()
+      address3 = Factory.address_hash()
+      address4 = Factory.address_hash()
+      address5 = Factory.address_hash()
+      address6 = Factory.address_hash()
+
+      assert address1 < address2 and address2 < address3 and address3 < address4 and address4 < address5 and
+               address5 < address6
+
+      # insert pools in descending order
+      insert(:staking_pool, is_validator: true, is_active: false, staking_address_hash: address6, stakes_ratio: 0)
+      insert(:staking_pool, is_validator: true, is_active: false, staking_address_hash: address5, stakes_ratio: 0)
+      insert(:staking_pool, is_validator: true, is_active: true, staking_address_hash: address4, stakes_ratio: 30)
+      insert(:staking_pool, is_validator: true, is_active: true, staking_address_hash: address3, stakes_ratio: 60)
+      insert(:staking_pool, is_validator: true, is_active: true, staking_address_hash: address2, stakes_ratio: 5)
+      insert(:staking_pool, is_validator: true, is_active: true, staking_address_hash: address1, stakes_ratio: 5)
+
+      # get all pools in the order `desc: :stakes_ratio, desc: :is_active, asc: :staking_address_hash`
+      options = %PagingOptions{page_size: 20, page_number: 1}
+
+      assert [
+               %{pool: pool1},
+               %{pool: pool2},
+               %{pool: pool3},
+               %{pool: pool4},
+               %{pool: pool5},
+               %{pool: pool6}
+             ] = Chain.staking_pools(:validator, options)
+
+      assert pool1.staking_address_hash == address3
+      assert pool2.staking_address_hash == address4
+      assert pool3.staking_address_hash == address1
+      assert pool4.staking_address_hash == address2
+      assert pool5.staking_address_hash == address5
+      assert pool6.staking_address_hash == address6
     end
 
     test "inactive staking pools" do
@@ -5000,7 +5094,7 @@ defmodule Explorer.ChainTest do
 
       options = %PagingOptions{page_size: 20, page_number: 1}
 
-      assert [gotten_pool] = Chain.staking_pools(:inactive, options)
+      assert [%{pool: gotten_pool}] = Chain.staking_pools(:inactive, options)
       assert inserted_pool.staking_address_hash == gotten_pool.staking_address_hash
     end
   end
@@ -5025,6 +5119,60 @@ defmodule Explorer.ChainTest do
       insert(:staking_pool, is_active: false)
 
       assert Chain.staking_pools_count(:inactive) == 1
+    end
+  end
+
+  describe "delegators_count_sum/1" do
+    test "validators pools" do
+      insert(:staking_pool, is_active: true, is_validator: true, delegators_count: 10)
+      insert(:staking_pool, is_active: true, is_validator: false, delegators_count: 7)
+      insert(:staking_pool, is_active: true, is_validator: true, delegators_count: 5)
+
+      assert Chain.delegators_count_sum(:validator) == 15
+    end
+
+    test "active staking pools" do
+      insert(:staking_pool, is_active: true, delegators_count: 10)
+      insert(:staking_pool, is_active: true, delegators_count: 7)
+      insert(:staking_pool, is_active: false, delegators_count: 5)
+
+      assert Chain.delegators_count_sum(:active) == 17
+    end
+
+    test "inactive staking pools" do
+      insert(:staking_pool, is_active: true, delegators_count: 10)
+      insert(:staking_pool, is_active: true, delegators_count: 7)
+      insert(:staking_pool, is_active: false, delegators_count: 5)
+      insert(:staking_pool, is_active: false, delegators_count: 1)
+
+      assert Chain.delegators_count_sum(:inactive) == 6
+    end
+  end
+
+  describe "total_staked_amount_sum/1" do
+    test "validators pools" do
+      insert(:staking_pool, is_active: true, is_validator: true, total_staked_amount: 10)
+      insert(:staking_pool, is_active: true, is_validator: false, total_staked_amount: 7)
+      insert(:staking_pool, is_active: true, is_validator: true, total_staked_amount: 5)
+
+      assert Chain.total_staked_amount_sum(:validator) == Decimal.new("15")
+    end
+
+    test "active staking pools" do
+      insert(:staking_pool, is_active: true, total_staked_amount: 10)
+      insert(:staking_pool, is_active: true, total_staked_amount: 7)
+      insert(:staking_pool, is_active: false, total_staked_amount: 5)
+
+      assert Chain.total_staked_amount_sum(:active) == Decimal.new("17")
+    end
+
+    test "inactive staking pools" do
+      insert(:staking_pool, is_active: true, total_staked_amount: 10)
+      insert(:staking_pool, is_active: true, total_staked_amount: 7)
+      insert(:staking_pool, is_active: false, total_staked_amount: 5)
+      insert(:staking_pool, is_active: false, total_staked_amount: 1)
+
+      assert Chain.total_staked_amount_sum(:inactive) == Decimal.new("6")
     end
   end
 

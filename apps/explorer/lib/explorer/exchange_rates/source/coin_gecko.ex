@@ -3,10 +3,10 @@ defmodule Explorer.ExchangeRates.Source.CoinGecko do
   Adapter for fetching exchange rates from https://coingecko.com
   """
 
+  alias Explorer.Chain
   alias Explorer.ExchangeRates.{Source, Token}
-  alias HTTPoison.{Error, Response}
 
-  import Source, only: [decode_json: 1, to_decimal: 1, headers: 0]
+  import Source, only: [to_decimal: 1]
 
   @behaviour Source
 
@@ -64,14 +64,19 @@ defmodule Explorer.ExchangeRates.Source.CoinGecko do
   end
 
   defp get_btc_value(id, market_data) do
-    {:ok, price} = get_btc_price()
-    btc_price = to_decimal(price)
-    current_price = get_current_price(market_data)
+    case get_btc_price() do
+      {:ok, price} ->
+        btc_price = to_decimal(price)
+        current_price = get_current_price(market_data)
 
-    if id != "btc" && current_price && btc_price do
-      Decimal.div(current_price, btc_price)
-    else
-      1
+        if id != "btc" && current_price && btc_price do
+          Decimal.div(current_price, btc_price)
+        else
+          1
+        end
+
+      _ ->
+        1
     end
   end
 
@@ -96,17 +101,26 @@ defmodule Explorer.ExchangeRates.Source.CoinGecko do
   end
 
   @impl Source
-  def source_url(symbol) do
-    id =
-      case coin_id(symbol) do
-        {:ok, id} ->
-          id
+  def source_url(input) do
+    case Chain.Hash.Address.cast(input) do
+      {:ok, _} ->
+        address_hash_str = input
+        "#{base_url()}/coins/ethereum/contract/#{address_hash_str}"
 
-        _ ->
-          nil
-      end
+      _ ->
+        symbol = input
 
-    if id, do: "#{base_url()}/coins/#{id}", else: nil
+        id =
+          case coin_id(symbol) do
+            {:ok, id} ->
+              id
+
+            _ ->
+              nil
+          end
+
+        if id, do: "#{base_url()}/coins/#{id}", else: nil
+    end
   end
 
   defp base_url do
@@ -120,59 +134,66 @@ defmodule Explorer.ExchangeRates.Source.CoinGecko do
   end
 
   def coin_id(symbol) do
-    url = "#{base_url()}/coins/list"
+    id_mapping = bridged_token_symbol_to_id_mapping_to_get_price(symbol)
 
-    symbol_downcase = String.downcase(symbol)
+    if id_mapping do
+      {:ok, id_mapping}
+    else
+      url = "#{base_url()}/coins/list"
 
-    case HTTPoison.get(url, headers()) do
-      {:ok, %Response{body: body, status_code: 200}} ->
-        data = decode_json(body)
+      symbol_downcase = String.downcase(symbol)
 
-        symbol_data =
-          Enum.find(data, fn item ->
-            item["symbol"] == symbol_downcase
-          end)
+      case Source.http_request(url) do
+        {:ok, data} = resp ->
+          if is_list(data) do
+            symbol_data =
+              Enum.find(data, fn item ->
+                item["symbol"] == symbol_downcase
+              end)
 
-        if symbol_data do
-          {:ok, symbol_data["id"]}
-        else
-          {:error, :not_found}
-        end
+            if symbol_data do
+              {:ok, symbol_data["id"]}
+            else
+              {:error, :not_found}
+            end
+          else
+            resp
+          end
 
-      {:ok, %Response{body: body, status_code: status_code}} when status_code in 400..499 ->
-        {:error, decode_json(body)["error"]}
-
-      {:error, %Error{reason: reason}} ->
-        {:error, reason}
-
-      {:error, :nxdomain} ->
-        {:error, "CoinGecko is not responsive"}
+        resp ->
+          resp
+      end
     end
   end
 
   defp get_btc_price(currency \\ "usd") do
     url = "#{base_url()}/exchange_rates"
 
-    case HTTPoison.get(url, headers()) do
-      {:ok, %Response{body: body, status_code: 200}} ->
-        data = decode_json(body)
-        current_price = data["rates"][currency]["value"]
+    case Source.http_request(url) do
+      {:ok, data} = resp ->
+        if is_map(data) do
+          current_price = data["rates"][currency]["value"]
 
-        {:ok, current_price}
+          {:ok, current_price}
+        else
+          resp
+        end
 
-      {:ok, %Response{body: body, status_code: status_code}} when status_code in 400..499 ->
-        {:error, decode_json(body)["error"]}
-
-      {:error, %Error{reason: reason}} ->
-        {:error, reason}
-
-      {:error, :nxdomain} ->
-        {:error, "CoinGecko is not responsive"}
+      resp ->
+        resp
     end
   end
 
   @spec config(atom()) :: term
   defp config(key) do
     Application.get_env(:explorer, __MODULE__, [])[key]
+  end
+
+  defp bridged_token_symbol_to_id_mapping_to_get_price(symbol) do
+    case symbol do
+      "UNI" -> "uniswap"
+      "SURF" -> "surf-finance"
+      _symbol -> nil
+    end
   end
 end

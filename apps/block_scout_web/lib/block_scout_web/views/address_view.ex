@@ -4,11 +4,11 @@ defmodule BlockScoutWeb.AddressView do
   require Logger
 
   alias BlockScoutWeb.{AccessHelpers, LayoutView}
-  alias Explorer.Chain
+  alias Explorer.{Chain, CustomContractsHelpers}
   alias Explorer.Chain.{Address, Hash, InternalTransaction, SmartContract, Token, TokenTransfer, Transaction, Wei}
   alias Explorer.Chain.Block.Reward
   alias Explorer.ExchangeRates.Token, as: TokenExchangeRate
-  alias Explorer.SmartContract.Writer
+  alias Explorer.SmartContract.{Helper, Writer}
 
   @dialyzer :no_match
 
@@ -132,7 +132,7 @@ defmodule BlockScoutWeb.AddressView do
       do: ""
 
   def balance_percentage(%Address{fetched_coin_balance: balance}, total_supply) do
-    if total_supply > 0 do
+    if Decimal.cmp(total_supply, 0) == :gt do
       balance
       |> Wei.to(:ether)
       |> Decimal.div(Decimal.new(total_supply))
@@ -229,13 +229,13 @@ defmodule BlockScoutWeb.AddressView do
   def smart_contract_verified?(%Address{smart_contract: nil}), do: false
 
   def smart_contract_with_read_only_functions?(%Address{smart_contract: %SmartContract{}} = address) do
-    Enum.any?(address.smart_contract.abi, &(&1["constant"] || &1["stateMutability"] == "view"))
+    Enum.any?(address.smart_contract.abi, &Helper.queriable_method?(&1))
   end
 
   def smart_contract_with_read_only_functions?(%Address{smart_contract: nil}), do: false
 
   def smart_contract_is_proxy?(%Address{smart_contract: %SmartContract{}} = address) do
-    Chain.is_proxy_contract?(address.smart_contract.abi)
+    Chain.proxy_contract?(address.hash, address.smart_contract.abi)
   end
 
   def smart_contract_is_proxy?(%Address{smart_contract: nil}), do: false
@@ -255,16 +255,18 @@ defmodule BlockScoutWeb.AddressView do
   end
 
   def token_title(%Token{name: nil, contract_address_hash: contract_address_hash}) do
-    contract_address_hash
-    |> to_string
-    |> String.slice(0..5)
+    short_hash_left_right(contract_address_hash)
   end
 
   def token_title(%Token{name: name, symbol: symbol}), do: "#{name} (#{symbol})"
 
   def trimmed_hash(%Hash{} = hash) do
     string_hash = to_string(hash)
-    "#{String.slice(string_hash, 0..5)}–#{String.slice(string_hash, -6..-1)}"
+    trimmed_hash(string_hash)
+  end
+
+  def trimmed_hash(address) when is_binary(address) do
+    "#{String.slice(address, 0..7)}–#{String.slice(address, -6..-1)}"
   end
 
   def trimmed_hash(_), do: ""
@@ -290,9 +292,7 @@ defmodule BlockScoutWeb.AddressView do
     address.contracts_creation_transaction.from_address_hash
   end
 
-  def from_address_hash(_address) do
-    nil
-  end
+  def from_address_hash(_address), do: nil
 
   def address_link_to_other_explorer(link, address, full) do
     if full do
@@ -364,7 +364,51 @@ defmodule BlockScoutWeb.AddressView do
     "0x" <> short_address
   end
 
+  def short_hash_left_right(hash) when not is_nil(hash) do
+    case hash do
+      "0x" <> rest ->
+        shortify_hash_string(rest)
+
+      %Chain.Hash{
+        byte_count: _,
+        bytes: bytes
+      } ->
+        shortify_hash_string(Base.encode16(bytes, case: :lower))
+
+      hash ->
+        shortify_hash_string(hash)
+    end
+  end
+
+  def short_hash_left_right(hash) when is_nil(hash), do: ""
+
+  defp shortify_hash_string(hash) do
+    <<
+      left::binary-size(6),
+      _middle::binary-size(28),
+      right::binary-size(6)
+    >> = to_string(hash)
+
+    "0x" <> left <> "-" <> right
+  end
+
   def short_contract_name(name, max_length) do
+    short_string(name, max_length)
+  end
+
+  def short_token_id(%Decimal{} = token_id, max_length) do
+    token_id
+    |> Decimal.to_string()
+    |> short_string(max_length)
+  end
+
+  def short_token_id(token_id, max_length) do
+    short_string(token_id, max_length)
+  end
+
+  def short_string(nil, _max_length), do: ""
+
+  def short_string(name, max_length) do
     part_length = Kernel.trunc(max_length / 4)
 
     if String.length(name) <= max_length,
@@ -378,5 +422,27 @@ defmodule BlockScoutWeb.AddressView do
       contract?(address) -> "Contract #{to_string(address)}"
       true -> "#{to_string(address)}"
     end
+  end
+
+  def smart_contract_is_gnosis_safe_proxy?(%Address{smart_contract: %SmartContract{}} = address) do
+    address.smart_contract.name == "GnosisSafeProxy" && Chain.gnosis_safe_contract?(address.smart_contract.abi)
+  end
+
+  def smart_contract_is_gnosis_safe_proxy?(_address), do: false
+
+  def is_omni_bridge?(nil), do: false
+
+  def is_omni_bridge?(address_hash) do
+    address_hash_str = "0x" <> Base.encode16(address_hash.bytes, case: :lower)
+
+    address_hash_str == String.downcase(System.get_env("ETH_OMNI_BRIDGE_MEDIATOR", "")) ||
+      address_hash_str == String.downcase(System.get_env("BSC_OMNI_BRIDGE_MEDIATOR", ""))
+  end
+
+  def is_amb_bridge?(nil), do: false
+
+  def is_amb_bridge?(address_hash) do
+    address_hash_str = "0x" <> Base.encode16(address_hash.bytes, case: :lower)
+    String.downcase(System.get_env("AMB_BRIDGE_MEDIATORS", "")) =~ address_hash_str
   end
 end

@@ -7,11 +7,62 @@ defmodule BlockScoutWeb.BridgedTokensController do
   alias Explorer.Chain
   alias Phoenix.View
 
+  def show(conn, %{"type" => "JSON", "id" => "eth"} = params) do
+    get_items(conn, params, :eth)
+  end
+
+  def show(conn, %{"type" => "JSON", "id" => "bsc"} = params) do
+    get_items(conn, params, :bsc)
+  end
+
+  def show(conn, %{"id" => "eth"}) do
+    render(conn, "index.html",
+      current_path: current_path(conn),
+      chain: "Ethereum",
+      chain_id: 1,
+      destination: :eth
+    )
+  end
+
+  def show(conn, %{"id" => "bsc"}) do
+    render(conn, "index.html",
+      current_path: current_path(conn),
+      chain: "Binance Smart Chain",
+      chain_id: 56,
+      destination: :bsc
+    )
+  end
+
+  def show(conn, _params) do
+    not_found(conn)
+  end
+
   def index(conn, %{"type" => "JSON"} = params) do
-    tokens =
+    get_items(conn, params, :eth)
+  end
+
+  def index(conn, _params) do
+    render(conn, "index.html",
+      current_path: current_path(conn),
+      chain: "Ethereum",
+      chain_id: 1,
+      destination: :eth
+    )
+  end
+
+  defp get_items(conn, params, destination) do
+    filter =
+      if Map.has_key?(params, "filter") do
+        Map.get(params, "filter")
+      else
+        nil
+      end
+
+    paging_params =
       params
       |> paging_options()
-      |> Chain.list_top_bridged_tokens()
+
+    tokens = Chain.list_top_bridged_tokens(destination, filter, paging_params)
 
     {tokens_page, next_page} = split_list_by_page(tokens)
 
@@ -21,22 +72,35 @@ defmodule BlockScoutWeb.BridgedTokensController do
           nil
 
         next_page_params ->
-          tokens_path(
+          bridged_tokens_path(
             conn,
-            :index,
+            :show,
+            destination,
             Map.delete(next_page_params, "type")
           )
+      end
+
+    items_count_str = Map.get(params, "items_count")
+
+    items_count =
+      if items_count_str do
+        {items_count, _} = Integer.parse(items_count_str)
+        items_count
+      else
+        0
       end
 
     items =
       tokens_page
       |> Enum.with_index(1)
-      |> Enum.map(fn {token, index} ->
+      |> Enum.map(fn {[token, bridged_token], index} ->
         View.render_to_string(
           BridgedTokensView,
           "_tile.html",
           token: token,
-          index: index
+          bridged_token: bridged_token,
+          destination: destination,
+          index: items_count + index
         )
       end)
 
@@ -46,15 +110,6 @@ defmodule BlockScoutWeb.BridgedTokensController do
         items: items,
         next_page_path: next_page_path
       }
-    )
-  end
-
-  def index(conn, _params) do
-    total_supply = Chain.total_supply()
-
-    render(conn, "index.html",
-      current_path: current_path(conn),
-      total_supply: total_supply
     )
   end
 end
